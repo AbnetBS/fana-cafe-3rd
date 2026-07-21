@@ -92,6 +92,31 @@ export default function AdminPanel({
   const pendingReservations = reservations.filter((r) => r.status === "pending" || r.status === "confirmed");
   const totalPendingNotifications = pendingOrders.length + pendingReservations.length;
 
+  // Active vs archived orders for the cashier workflow
+  const activeOrders = orders.filter((o) => o.status !== "completed" && o.status !== "cancelled");
+  const historyOrders = orders.filter((o) => o.status === "completed" || o.status === "cancelled");
+
+  // Parse order items safely (DB stores JSON string)
+  const parseOrderItems = (items: Order["items"]): Array<{ name: string; price: number; quantity: number }> => {
+    try {
+      const parsed = typeof items === "string" ? JSON.parse(items) : items;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  // Delete an order from history
+  const handleDeleteOrder = async (id: number) => {
+    if (!confirm("Permanently delete this order record?")) return;
+    try {
+      const res = await fetch(`/api/orders?id=${id}`, { method: "DELETE" });
+      if (res.ok) onRefreshData();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   // Desktop Notification Only Effect
   useEffect(() => {
     if (totalPendingNotifications > lastNotifiedCount) {
@@ -935,82 +960,168 @@ export default function AdminPanel({
 
         {/* TAB 5: ONLINE ORDERS MANAGER */}
         {activeTab === "orders" && (
-          <div className="space-y-6">
+          <div className="space-y-8">
             <div>
               <h2 className="text-xl font-serif font-bold text-amber-100">Takeaway & Delivery Orders</h2>
-              <p className="text-xs text-stone-400">Track incoming orders, items breakdown, and delivery addresses.</p>
+              <p className="text-xs text-stone-400">
+                Workflow: New order → click <strong>Accept & Prepare</strong> → when ready, click <strong>Mark Completed</strong> → order moves to History below.
+              </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {orders.length === 0 ? (
-                <div className="col-span-2 p-8 bg-[#2C1B17] rounded-3xl text-center text-stone-500 border border-stone-800">
-                  No online orders placed yet.
-                </div>
-              ) : (
-                orders.map((ord) => {
-                  let itemsList: any[] = [];
-                  try {
-                    itemsList = typeof ord.items === "string" ? JSON.parse(ord.items) : ord.items;
-                  } catch (e) {}
+            {/* ACTIVE ORDERS (pending + preparing) */}
+            <div className="space-y-4">
+              <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider flex items-center gap-2">
+                <BellRing className="w-4 h-4 text-[#C9A227]" />
+                Active Orders ({activeOrders.length})
+              </h3>
 
-                  return (
-                    <div
-                      key={ord.id}
-                      className="bg-[#2C1B17] p-5 rounded-3xl border border-[#C9A227]/30 shadow-xl space-y-3"
-                    >
-                      <div className="flex items-center justify-between border-b border-stone-800 pb-2">
-                        <div>
-                          <span className="font-mono text-xs font-bold text-[#C9A227]">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {activeOrders.length === 0 ? (
+                  <div className="col-span-2 p-8 bg-[#2C1B17] rounded-3xl text-center text-stone-500 border border-stone-800 text-xs">
+                    No active orders right now. New customer orders will appear here automatically.
+                  </div>
+                ) : (
+                  activeOrders.map((ord) => {
+                    const itemsList = parseOrderItems(ord.items);
+                    const isPending = ord.status === "pending";
+                    const isPreparing = ord.status === "preparing";
+
+                    return (
+                      <div
+                        key={ord.id}
+                        className={`bg-[#2C1B17] p-5 rounded-3xl border shadow-xl space-y-3 ${
+                          isPreparing ? "border-sky-500/50" : "border-[#C9A227]/40"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between border-b border-stone-800 pb-2">
+                          <div>
+                            <span className="font-mono text-xs font-bold text-[#C9A227]">
+                              {ord.orderNumber}
+                            </span>
+                            <span className="text-[10px] uppercase font-extrabold text-stone-400 block">
+                              Type: {ord.orderType}
+                            </span>
+                          </div>
+                          <span className="text-lg font-serif font-black text-amber-200">
+                            {ord.totalAmount} ETB
+                          </span>
+                        </div>
+
+                        <div className="text-xs space-y-1">
+                          <p className="font-bold text-amber-100">{ord.customerName} ({ord.phone})</p>
+                          <p className="text-stone-400 text-[11px]">{ord.address}</p>
+                        </div>
+
+                        <div className="bg-[#3D2314] p-3 rounded-2xl border border-stone-800 space-y-1">
+                          <span className="text-[10px] uppercase font-bold text-amber-300">Items:</span>
+                          <ul className="text-xs space-y-1 text-stone-300">
+                            {itemsList.map((it: any, i: number) => (
+                              <li key={i} className="flex justify-between">
+                                <span>• {it.name} x{it.quantity}</span>
+                                <span className="font-bold">{it.price * it.quantity} ETB</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+
+                        {/* Status chip + workflow action */}
+                        <div className="flex items-center justify-between pt-2">
+                          <span
+                            className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase ${
+                              isPending
+                                ? "bg-amber-500/20 text-amber-300 animate-pulse"
+                                : "bg-sky-500/20 text-sky-300"
+                            }`}
+                          >
+                            {isPending ? "🔔 New Order" : "👨‍🍳 Preparing..."}
+                          </span>
+
+                          <div className="flex gap-1.5">
+                            {isPending && (
+                              <button
+                                onClick={() => handleUpdateOrderStatus(ord.id, "preparing")}
+                                className="px-3 py-1.5 bg-sky-600 text-white rounded-lg text-xs font-bold hover:bg-sky-500 shadow"
+                              >
+                                Accept & Prepare
+                              </button>
+                            )}
+                            {isPreparing && (
+                              <button
+                                onClick={() => handleUpdateOrderStatus(ord.id, "completed")}
+                                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-500 shadow"
+                              >
+                                ✓ Mark Completed
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                if (confirm("Cancel this order?")) handleUpdateOrderStatus(ord.id, "cancelled");
+                              }}
+                              className="px-3 py-1.5 bg-rose-900/60 text-rose-300 rounded-lg text-xs font-bold hover:bg-rose-700 hover:text-white"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* ORDER HISTORY (completed + cancelled) */}
+            <div className="space-y-4 pt-4 border-t border-stone-800">
+              <h3 className="text-sm font-bold text-stone-400 uppercase tracking-wider flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                Order History ({historyOrders.length})
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {historyOrders.length === 0 ? (
+                  <div className="col-span-3 p-5 bg-[#2C1B17] rounded-2xl text-center text-stone-500 border border-stone-800 text-xs">
+                    Completed orders will be archived here after you click "Mark Completed".
+                  </div>
+                ) : (
+                  historyOrders.map((ord) => {
+                    const itemsList = parseOrderItems(ord.items);
+                    const isDone = ord.status === "completed";
+                    return (
+                      <div
+                        key={ord.id}
+                        className="bg-[#241714] p-4 rounded-2xl border border-stone-800 space-y-2 opacity-80"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[11px] font-bold text-stone-400">
                             {ord.orderNumber}
                           </span>
-                          <span className="text-[10px] uppercase font-extrabold text-stone-400 block">
-                            Type: {ord.orderType}
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
+                              isDone
+                                ? "bg-emerald-500/20 text-emerald-400"
+                                : "bg-rose-500/20 text-rose-400"
+                            }`}
+                          >
+                            {isDone ? "✓ COMPLETED" : "✗ CANCELLED"}
                           </span>
                         </div>
-
-                        <span className="text-lg font-serif font-black text-amber-200">
-                          {ord.totalAmount} ETB
-                        </span>
-                      </div>
-
-                      <div className="text-xs space-y-1">
-                        <p className="font-bold text-amber-100">{ord.customerName} ({ord.phone})</p>
-                        <p className="text-stone-400 text-[11px]">{ord.address}</p>
-                      </div>
-
-                      <div className="bg-[#3D2314] p-3 rounded-2xl border border-stone-800 space-y-1">
-                        <span className="text-[10px] uppercase font-bold text-amber-300">Items:</span>
-                        <ul className="text-xs space-y-1 text-stone-300">
-                          {itemsList.map((it: any, i: number) => (
-                            <li key={i} className="flex justify-between">
-                              <span>• {it.name} x{it.quantity}</span>
-                              <span className="font-bold">{it.price * it.quantity} ETB</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-
-                      <div className="flex items-center justify-between pt-2">
-                        <span className="text-xs font-bold text-stone-400">Status: {ord.status}</span>
-                        <div className="flex gap-1">
+                        <div className="flex items-center justify-between text-xs text-stone-400">
+                          <span className="truncate">{ord.customerName} • {itemsList.length} item(s)</span>
+                          <span className="font-bold text-amber-200/80">{ord.totalAmount} ETB</span>
+                        </div>
+                        <div className="flex justify-end pt-1">
                           <button
-                            onClick={() => handleUpdateOrderStatus(ord.id, "preparing")}
-                            className="px-2 py-1 bg-amber-500/20 text-amber-300 rounded text-[10px] font-bold hover:bg-amber-500 hover:text-black"
+                            onClick={() => handleDeleteOrder(ord.id)}
+                            className="text-[10px] text-rose-500 hover:underline font-bold"
                           >
-                            Preparing
-                          </button>
-                          <button
-                            onClick={() => handleUpdateOrderStatus(ord.id, "completed")}
-                            className="px-2 py-1 bg-emerald-600 text-white rounded text-[10px] font-bold hover:bg-emerald-500"
-                          >
-                            Complete
+                            Delete from history
                           </button>
                         </div>
                       </div>
-                    </div>
-                  );
-                })
-              )}
+                    );
+                  })
+                )}
+              </div>
             </div>
           </div>
         )}
